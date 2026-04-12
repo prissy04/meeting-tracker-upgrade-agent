@@ -37,6 +37,59 @@ function generateReminder(item) {
   return `Hi ${item.owner},\n\nFollowing up on an action item from our meeting "${item.meetingTitle}" (${item.date}):\n\n  → ${item.title}${item.deadline ? `\n  📅 Due: ${item.deadline}` : ""}\n\nCould you provide a status update on this? Let me know if you need anything to move forward.\n\nThanks!`;
 }
 
+function exportToCSV(actionItems, projects) {
+  const headers = ["Project", "Action Item", "Owner", "Deadline", "Priority", "Status", "Meeting", "Meeting Date", "Completed At"];
+  const rows = actionItems.map(i => {
+    const proj = projects.find(p => p.id === i.projectId);
+    const status = isOverdue(i) && i.status !== "done" ? "overdue" : i.status;
+    return [
+      proj?.name || "Unknown",
+      `"${(i.title || "").replace(/"/g, '""')}"`,
+      i.owner || "",
+      i.deadline || "",
+      i.priority || "",
+      status,
+      `"${(i.meetingTitle || "").replace(/"/g, '""')}"`,
+      i.date || "",
+      i.completedAt ? formatDate(i.completedAt) : ""
+    ].join(",");
+  });
+  const csv = [headers.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `action-items-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function handleFileUpload(file, setNotes, showToast) {
+  if (!file) return;
+  const validTypes = [".txt", ".vtt", ".csv", ".md"];
+  const ext = "." + file.name.split(".").pop().toLowerCase();
+  if (!validTypes.includes(ext)) {
+    showToast("⚠ Unsupported file type. Use .txt, .vtt, .csv, or .md");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    let content = e.target.result;
+    // Clean VTT format — strip timestamps and metadata
+    if (ext === ".vtt") {
+      content = content
+        .replace(/^WEBVTT.*$/m, "")
+        .replace(/^\d+$/gm, "")
+        .replace(/\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*/g, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+    setNotes(content);
+    showToast(`✅ Loaded "${file.name}"`);
+  };
+  reader.readAsText(file);
+}
+
 function generateWeeklyDigest(actionItems, meetings, projects, projectId) {
   const items = projectId === "all" ? actionItems : actionItems.filter(i => i.projectId === projectId);
   const mtgs = projectId === "all" ? meetings : meetings.filter(m => m.projectId === projectId);
@@ -235,6 +288,7 @@ export default function MeetingTracker() {
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => setModal(generateWeeklyDigest(actionItems, meetings, projects, activeProject))} style={{ background: colors.accentDim, border: `1px solid ${colors.accent}44`, color: colors.accent, padding: "6px 14px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: fonts.display, fontWeight: 600 }}>📊 Digest</button>
+          <button onClick={() => { if (actionItems.length === 0) { showToast("No items to export"); return; } exportToCSV(activeProject === "all" ? actionItems : actionItems.filter(a => a.projectId === activeProject), projects); showToast("✅ CSV exported"); }} style={{ background: "transparent", border: `1px solid ${colors.border}`, color: colors.textDim, padding: "6px 14px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: fonts.display }}>⬇ CSV</button>
           <button onClick={clearAll} style={{ background: "transparent", border: `1px solid ${colors.border}`, color: colors.textDim, padding: "6px 14px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: fonts.display }}>Clear All Data</button>
         </div>
       </header>
@@ -370,7 +424,7 @@ export default function MeetingTracker() {
         {view === "add" && (
           <div>
             <div style={{ fontFamily: fonts.display, fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Add Meeting Notes</div>
-            <div style={{ fontSize: 13, color: colors.textDim, marginBottom: 16 }}>Select a project, paste notes from any platform, and the AI agent will extract action items, decisions, and risks.</div>
+            <div style={{ fontSize: 13, color: colors.textDim, marginBottom: 16 }}>Select a project, then paste notes, upload a transcript file, or drag and drop. The AI agent will extract action items, decisions, and risks.</div>
 
             {projects.length === 0 ? (
               <div style={{ background: colors.warnDim, border: `1px solid ${colors.warn}33`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -395,13 +449,21 @@ export default function MeetingTracker() {
                 </div>
 
                 <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Paste meeting notes here..."
+                  onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = colors.accent; }}
+                  onDragLeave={e => { e.currentTarget.style.borderColor = colors.border; }}
+                  onDrop={e => { e.preventDefault(); e.currentTarget.style.borderColor = colors.border; const f = e.dataTransfer.files[0]; if (f) handleFileUpload(f, setNotes, showToast); }}
                   style={{ width: "100%", minHeight: 250, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10, color: colors.text, padding: 16, fontSize: 14, fontFamily: fonts.body, resize: "vertical", outline: "none", boxSizing: "border-box" }} />
-                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
                   <button onClick={handleAnalyze} disabled={loading || !notes.trim() || !meetingProject}
                     style={{ background: loading ? colors.textMuted : colors.accent, color: colors.bg, border: "none", padding: "12px 28px", borderRadius: 8, fontWeight: 700, cursor: loading ? "wait" : "pointer", fontFamily: fonts.display, fontSize: 14, opacity: (!notes.trim() || !meetingProject) ? 0.4 : 1 }}>
                     {loading ? "⟳ Analyzing..." : "⚡ Analyze with AI"}</button>
+                  <label style={{ background: "transparent", border: `1px solid ${colors.border}`, color: colors.textDim, padding: "12px 20px", borderRadius: 8, fontSize: 13, cursor: "pointer", fontFamily: fonts.display, display: "flex", alignItems: "center", gap: 6 }}>
+                    📄 Upload File
+                    <input type="file" accept=".txt,.vtt,.csv,.md" style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; if (f) handleFileUpload(f, setNotes, showToast); e.target.value = ""; }} />
+                  </label>
                   <button onClick={() => setNotes(sampleMeeting)} style={{ background: "transparent", border: `1px solid ${colors.border}`, color: colors.textDim, padding: "12px 20px", borderRadius: 8, fontSize: 13, cursor: "pointer", fontFamily: fonts.display }}>Load Sample</button>
                 </div>
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8, fontFamily: fonts.display }}>Supports .txt, .vtt (Teams/Zoom transcripts), .csv, and .md files. Or drag and drop onto the text area.</div>
                 {error && <div style={{ color: colors.danger, marginTop: 12, fontSize: 13 }}>{error}</div>}
               </>
             )}
@@ -412,7 +474,12 @@ export default function MeetingTracker() {
         {view === "items" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-              <div style={{ fontFamily: fonts.display, fontSize: 18, fontWeight: 700 }}>{itemFilter === "risks" ? "Risks" : "Action Items"}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ fontFamily: fonts.display, fontSize: 18, fontWeight: 700 }}>{itemFilter === "risks" ? "Risks" : "Action Items"}</div>
+                {itemFilter !== "risks" && fItems.length > 0 && (
+                  <button onClick={() => exportToCSV(fItems, projects)} style={{ background: "transparent", border: `1px solid ${colors.border}`, color: colors.textDim, padding: "4px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: fonts.display, fontWeight: 600 }}>⬇ Export CSV</button>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                 {["all", "open", "overdue", "done", "risks"].map(f => (
                   <button key={f} onClick={() => setItemFilter(f)} style={{ background: itemFilter === f ? colors.accentDim : "transparent", border: itemFilter === f ? `1px solid ${colors.accent}44` : "1px solid transparent", color: itemFilter === f ? colors.accent : colors.textDim, padding: "5px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: fonts.display, fontWeight: 600, textTransform: "uppercase" }}>{f}</button>
